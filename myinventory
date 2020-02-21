@@ -1,0 +1,24 @@
+## Please define Your Variable here.
+
+## For ACS Cluster
+[acs]
+192.168.X.X host_name=first.local.lab dns_name=8.8.8.8 ip_addr='192.168.X.X' cs_master=yes
+192.168.X.X host_name=second.local.lab dns_name=8.8.8.8 ip_addr='192.168.X.X'
+
+[acs:vars]
+secondary_nfs_path='<Path of your NFS Secondary Storage'
+hypvervisor_type='xenserver'
+system_vm_path='http://X.X.X.X/data/systemvmtemplate-4.11.3-xen.vhd.bz2'
+
+### For DB Cluster
+
+[db]
+192.168.X.X dns_name=8.8.8.8 ip_addr='192.168.X.X'  id='1' master=yes
+192.168.X.X dns_name=8.8.8.8 ip_addr='192.168.X.X'  id='2' slave=yes
+
+[db:vars]
+mysql_password='<Stronge Password needs to set for Mysql'
+slave_username='Slave_User_name'
+slave_password='Slave_User_Password'
+mysql_master_ip='192.168.X.X'
+cloud_db_password='Cloud user DB Password'
