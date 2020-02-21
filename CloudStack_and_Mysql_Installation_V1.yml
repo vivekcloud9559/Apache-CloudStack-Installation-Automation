@@ -1,0 +1,202 @@
+---
+  - hosts: acs
+    tasks:
+      - name: "Lets disable the firewalld"
+        service:
+            name: firewalld
+            state: stopped
+            enabled: no
+      - name: "Disable the Selinux"
+        lineinfile:
+          path: /etc/sysconfig/selinux
+          regexp: '^SELINUX='
+          line: SELINUX=disabled
+      - name: "Configure the hostname ( FQDN )"
+        hostname:
+          name: "{{ host_name }}"
+      - name: "Put entry in hosts file"
+        lineinfile:
+          path: /etc/hosts
+          line: "{{ ip_addr }} {{ host_name }}"
+      - name: "Lets put the DNS entry in resolv.conf"
+        lineinfile:
+          path: /etc/resolv.conf
+          regexp: '^nameserver'
+          line: "nameserver {{ dns_name }}"
+      - name: "Lets install basic packages"
+        yum:
+          name: "{{ item }}"
+          state: present
+        with_items:
+          - wget
+          - net-tools
+          - python-setuptools
+          - mysql 
+          - ntp
+          - nfs-utils
+          - rpcbind
+          - libselinux-python
+          - rng-tools 
+          - ntp
+          - epel-release 
+      - name: "Now lets install msyql connector"
+        yum:
+          name: mysql-connector-python
+          state: present
+      - name: "Lets sync the time"
+        command: ntpdate -u 0.centos.pool.ntp.org
+      - name: "Lets create repo for cloudstack"
+        yum_repository:
+          name: CloudStack 
+          description: Cloudstack
+          file: Cloudstack
+          baseurl: http://packages.shapeblue.com/cloudstack/upstream/centos7/4.13/
+          enabled: yes
+          gpgcheck: yes
+          gpgkey: http://packages.shapeblue.com/release.asc
+      - name: "Now lets install cloudstack-packages"
+        yum:
+          name: "{{ item }}"
+          state: present
+        with_items:
+          - cloudstack-management
+          - cloudstack-usage
+      - name: "Now enable the services"
+        service:
+          name: "{{ item }}"
+          state: started
+          enabled: yes
+        with_items:
+          - ntpd
+  - hosts: db
+    tasks:
+      - name: "Lets disable the firewalld"
+        service:
+            name: firewalld
+            state: stopped
+            enabled: no
+      - name: "Disable the Selinux"
+        lineinfile:
+          path: /etc/sysconfig/selinux
+          regexp: '^SELINUX='
+          line: SELINUX=disabled
+      - name: "Configure the hostname ( FQDN )"
+        hostname:
+          name: "{{ host_name }}"
+      - name: "Put entry in hosts file"
+        lineinfile:
+          path: /etc/hosts
+          line: "{{ ip_addr }} {{ host_name }}"
+      - name: "Lets put the DNS entry in resolv.conf"
+        lineinfile:
+          path: /etc/resolv.conf
+          regexp: '^nameserver'
+          line: "nameserver {{ dns_name }}"
+      - name: "Install the mysql 5.7 repository"
+        yum:
+          name: https://dev.mysql.com/get/mysql57-community-release-el7-9.noarch.rpm
+          state: present
+      - name: "Install the mysql community server"
+        yum:
+          name: mysql-community-server
+          state: present
+      - name: "Install the mysql python connector"
+        yum:
+          name: MySQL-python
+          state: present
+      - name: "Modify the my-cnf file"
+        copy: src={{ item }} dest=/etc/my.cnf
+        with_items:
+          - my.cnf
+      - name: "Let's change the server id"
+        lineinfile:
+          path: /etc/my.cnf
+          regexp: '^server-id'
+          line: "server-id = {{ id }}"
+      - name: "Increase the limit for the number of files that Mysql open"
+        command: "{{ item }}"
+        with_items: 
+          - mkdir /etc/systemd/system/mysqld.service.d -p
+          - echo "[Service]" > /etc/systemd/system/mysqld.service.d/override.conf
+          - echo "LimitNOFILE=65535" >> /etc/systemd/system/mysqld.service.d/override.conf
+          - systemctl daemon-reload
+# if this is master server then sever-id should be 1, if you used this scipt for installaton of mysql on slave, chnage server-id
+      - name: "Lets start the mysql services"
+        service:
+          name: mysqld
+          state: started
+          enabled: yes
+      - name: "lets show the password"
+        shell: "cat /var/lib/mysql/error.log | grep 'A temporary password is generated for root@localhost' | awk '{print $11}'"
+        register: output
+      - debug: var=output.stdout_lines
+      - name: "Change mysql password"
+        command: mysql -uroot -p'{{ output.stdout }}' -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mysql_password }}';" --connect-expired-password
+      - name: "Lets grant all privileges"
+        command: mysql -uroot -p'{{ mysql_password }}' -e "GRANT ALL ON *.* TO root@'%' IDENTIFIED BY '{{ mysql_password }}' WITH GRANT OPTION; flush privileges;"
+      - name: "Lets remove password validate plugin"
+        command: mysql -uroot -p'{{ mysql_password }}' -e "uninstall plugin validate_password;"
+      - name: "Now give the permission on the root user with Grant Option"
+        mysql_user:
+          login_user: root
+          login_password: "{{ mysql_password }}"
+          login_host: localhost
+          user: root
+          password: "{{ mysql_password }}"
+          priv: '*.*:ALL,GRANT'
+          state: present
+  - hosts: db
+    tasks:
+      - name: "Show me hostname"
+        mysql_replication:
+          mode: getmaster
+          login_user: root
+          login_password: "{{ mysql_password }}"
+          login_host: localhost
+        register: master_status
+      - debug: var=master_status
+        when: master is defined
+      - name: "Lets create a replicaton user"
+        command: mysql -uroot -p'{{ mysql_password }}' -e "grant replication slave on *.* TO '{{ slave_username }}'@'%' IDENTIFIED BY '{{ slave_password }}';"
+        when: master is defined
+      - name: "Now lets connect the master"
+        mysql_replication:
+          mode: changemaster
+          login_user: root
+          login_password: "{{ mysql_password }}"
+          master_host: "{{ mysql_master_ip }}"
+          master_log_file: "{{ master_status.File }}"
+          master_log_pos: "{{ master_status.Position }}"
+          master_user: "{{ slave_username }}"
+          master_password: "{{ slave_password }}"
+        when: slave is defined
+      - name: "Lets start slave"
+        mysql_replication:
+          mode: startslave
+          login_user: root
+          login_password: "{{ mysql_password }}"
+          login_host: localhost
+        when: slave is defined
+  - hosts: acs
+    tasks:
+      - name: "lets setup the CloudStack management on First Management Server"
+        shell: "cloudstack-setup-databases cloud:'{{ cloud_db_password }}'@'{{ mysql_master_ip }}' -i '{{ ip_addr }}' --deploy-as=root:'{{ mysql_password }}'"
+        when: cs_master is defined
+      - name: "Lets configure the management server on First Management server"
+        shell: cloudstack-setup-management
+        when: cs_master is defined
+      - name: "Lets configure the same on other management servers"
+        shell: "cloudstack-setup-databases cloud:'{{ cloud_db_password }}'@'{{ mysql_master_ip }}' -i '{{ ip_addr }}'"
+        when: cs_master is not defined
+      - name: "Lets configure the management server on other management server"
+        shell: cloudstack-setup-management
+        when: cs_master is not defined
+      - name: "Lets Prapare the system VM template"
+        mount:
+          path: /mnt
+          src: '{{ secondary_nfs_path }}'
+          state: mounted
+          fstype: nfs
+        when: cs_master is defined
+      - name: "Lets download the System VM template"
+        shell: /usr/share/cloudstack-common/scripts/storage/secondary/cloud-install-sys-tmplt -m /mnt/ -u '{{ system_vm_path }}' -h '{{ hypvervisor_type }}' -F
